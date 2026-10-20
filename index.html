@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EXIF 元数据解析器</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  /* 保证 hidden 属性不被 display: grid/flex 等作者样式覆盖 */
+  [hidden] { display: none !important; }
+
+  :root {
+    --bg: #08090d;
+    --card: rgba(255, 255, 255, 0.03);
+    --border: rgba(255, 255, 255, 0.08);
+    --border-hover: rgba(139, 124, 255, 0.45);
+    --text: #e8eaf0;
+    --text-dim: #8b90a0;
+    --accent: #8b7cff;
+    --accent-2: #60a5fa;
+    --mono: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
+  }
+
+  html, body { height: 100%; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    display: flex;
+    justify-content: center;
+    min-height: 100vh;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  /* 背景光晕 */
+  .glow {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(600px 400px at 20% -10%, rgba(139, 124, 255, 0.14), transparent 70%),
+      radial-gradient(700px 450px at 85% 15%, rgba(96, 165, 250, 0.09), transparent 70%);
+    z-index: 0;
+  }
+
+  .app {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 880px;
+    padding: 64px 24px 80px;
+  }
+
+  header { margin-bottom: 40px; }
+
+  h1 {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    background: linear-gradient(92deg, #ffffff 30%, #a78bfa 70%, #60a5fa);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .subtitle {
+    margin-top: 10px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  /* 拖放区 */
+  .dropzone {
+    border: 1.5px dashed var(--border);
+    border-radius: 16px;
+    background: var(--card);
+    backdrop-filter: blur(12px);
+    padding: 56px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.25s, background 0.25s, transform 0.25s;
+    user-select: none;
+  }
+
+  .dropzone:hover, .dropzone.dragging {
+    border-color: var(--border-hover);
+    background: rgba(139, 124, 255, 0.05);
+  }
+
+  .dropzone.dragging { transform: scale(1.01); }
+
+  .dropzone svg {
+    width: 44px;
+    height: 44px;
+    stroke: var(--text-dim);
+    transition: stroke 0.25s;
+    margin-bottom: 16px;
+  }
+
+  .dropzone:hover svg, .dropzone.dragging svg { stroke: var(--accent); }
+
+  .dropzone .main-text { font-size: 15px; }
+
+  .dropzone .main-text .link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+
+  .dropzone .hint {
+    margin-top: 8px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+
+  /* 结果区 */
+  .result {
+    margin-top: 32px;
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 20px;
+    animation: fadeUp 0.4s ease;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (max-width: 720px) {
+    .result { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    backdrop-filter: blur(12px);
+    overflow: hidden;
+  }
+
+  .preview img {
+    display: block;
+    width: 100%;
+    max-height: 340px;
+    object-fit: contain;
+    background: repeating-conic-gradient(#101218 0% 25%, #0b0d12 0% 50%) 50% / 20px 20px;
+  }
+
+  .preview-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 180px;
+    color: var(--text-dim);
+    font-size: 13px;
+    background: repeating-conic-gradient(#101218 0% 25%, #0b0d12 0% 50%) 50% / 20px 20px;
+  }
+
+  .fileinfo {
+    padding: 14px 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  .fileinfo .name {
+    font-size: 13.5px;
+    word-break: break-all;
+  }
+
+  .fileinfo .size {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .meta-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .meta-head h2 {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  #copyBtn {
+    font-size: 12px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  #copyBtn:hover { color: var(--text); border-color: var(--border-hover); }
+
+  /* 正负向提示词 */
+  .prompt-cards {
+    padding: 12px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .prompt-block {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .prompt-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+  }
+
+  .prompt-tag {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    padding: 3px 10px;
+    border-radius: 999px;
+  }
+
+  .prompt-tag.pos {
+    color: #6ee7b7;
+    background: rgba(52, 211, 153, 0.1);
+    border: 1px solid rgba(52, 211, 153, 0.25);
+  }
+
+  .prompt-tag.neg {
+    color: #fca5a5;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.22);
+  }
+
+  .prompt-copy {
+    font-size: 11px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 3px 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .prompt-copy:hover { color: var(--text); border-color: var(--border-hover); }
+
+  .prompt-text {
+    padding: 0 12px 10px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: #c9cdd9;
+    word-break: break-all;
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+
+  .prompt-text::-webkit-scrollbar { width: 8px; }
+  .prompt-text::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+  }
+
+  /* 生成参数 */
+  .params-block {
+    padding: 10px 0 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .params-title {
+    padding: 0 18px 6px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+  }
+
+  .meta-list {
+    max-height: 380px;
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+
+  .meta-list::-webkit-scrollbar { width: 8px; }
+  .meta-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+  }
+
+  .meta-row {
+    display: grid;
+    grid-template-columns: 40% 1fr;
+    gap: 12px;
+    padding: 8px 18px;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+
+  .meta-row:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
+
+  .meta-row .k { color: var(--text-dim); word-break: break-all; }
+  .meta-row .v { font-family: var(--mono); word-break: break-all; }
+
+  .meta-empty {
+    padding: 32px 18px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  details.raw { border-top: 1px solid var(--border); }
+
+  details.raw summary {
+    padding: 12px 18px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  details.raw summary:hover { color: var(--text); }
+
+  details.raw pre {
+    padding: 0 18px 16px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: #b8bdd0;
+    max-height: 300px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .error {
+    margin-top: 24px;
+    padding: 14px 18px;
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    background: rgba(248, 113, 113, 0.06);
+    border-radius: 12px;
+    color: #fca5a5;
+    font-size: 13px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<main class="app">
+  <header>
+    <h1>EXIF 元数据解析器</h1>
+    <p class="subtitle">拖入或选择图片，读取隐藏在像素之下的拍摄信息</p>
+  </header>
+
+  <section class="dropzone" id="dropzone">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 16V4m0 0l-4 4m4-4l4 4" stroke="currentColor"/>
+      <path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" stroke="currentColor"/>
+    </svg>
+    <p class="main-text">拖拽图片到此处，或 <span class="link">点击选择文件</span></p>
+    <p class="hint">支持 JPG / PNG / HEIC / WebP 等常见格式</p>
+    <input type="file" id="imgInput" accept="image/*" hidden>
+  </section>
+
+  <div class="error" id="error"></div>
+
+  <section class="result" id="resultPanel" hidden>
+    <div class="card preview">
+      <img id="previewImg" alt="" hidden>
+      <div class="preview-fallback" id="previewFallback" hidden>图片无法预览</div>
+      <div class="fileinfo">
+        <div class="name" id="fileName"></div>
+        <div class="size" id="fileSize"></div>
+      </div>
+    </div>
+
+    <div class="card meta">
+      <div class="meta-head">
+        <h2>元数据</h2>
+        <button id="copyBtn">复制 JSON</button>
+      </div>
+      <div class="prompt-cards" id="promptCards" hidden>
+        <div class="prompt-block">
+          <div class="prompt-label">
+            <span class="prompt-tag pos">正向提示词</span>
+            <button class="prompt-copy" id="copyPos">复制</button>
+          </div>
+          <div class="prompt-text" id="promptPos"></div>
+        </div>
+        <div class="prompt-block">
+          <div class="prompt-label">
+            <span class="prompt-tag neg">负向提示词</span>
+            <button class="prompt-copy" id="copyNeg">复制</button>
+          </div>
+          <div class="prompt-text" id="promptNeg"></div>
+        </div>
+      </div>
+      <div class="params-block" id="paramsBlock" hidden>
+        <div class="params-title" id="paramsTitle">生成参数</div>
+        <div class="params-list" id="paramsList"></div>
+      </div>
+      <div class="meta-list" id="metaList"></div>
+      <details class="raw">
+        <summary>查看原始 JSON</summary>
+        <pre id="result"></pre>
+      </details>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+import exifr from 'https://cdn.jsdelivr.net/npm/exifr@7.1.3/+esm'
+
+const dropzone = document.querySelector('#dropzone')
+const imgInput = document.querySelector('#imgInput')
+const errorBox = document.querySelector('#error')
+const resultPanel = document.querySelector('#resultPanel')
+const previewImg = document.querySelector('#previewImg')
+const fileName = document.querySelector('#fileName')
+const fileSize = document.querySelector('#fileSize')
+const metaList = document.querySelector('#metaList')
+const result = document.querySelector('#result')
+const copyBtn = document.querySelector('#copyBtn')
+const promptCards = document.querySelector('#promptCards')
+const promptPos = document.querySelector('#promptPos')
+const promptNeg = document.querySelector('#promptNeg')
+const copyPos = document.querySelector('#copyPos')
+const copyNeg = document.querySelector('#copyNeg')
+const previewFallback = document.querySelector('#previewFallback')
+const paramsBlock = document.querySelector('#paramsBlock')
+const paramsTitle = document.querySelector('#paramsTitle')
+const paramsList = document.querySelector('#paramsList')
+
+// 预览图加载成功/失败状态切换，避免破损图标
+previewImg.addEventListener('load', () => {
+  previewImg.hidden = false
+  previewFallback.hidden = true
+})
+previewImg.addEventListener('error', () => {
+  previewImg.hidden = true
+  previewFallback.hidden = false
+})
+
+let currentJson = ''
+let currentUrl = null
+let currentPositive = ''
+let currentNegative = ''
+
+// 点击选择文件
+dropzone.addEventListener('click', () => imgInput.click())
+imgInput.addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0])
+  imgInput.value = ''
+})
+
+// 拖拽支持（计数器避免经过子元素时闪烁）
+let dragDepth = 0
+dropzone.addEventListener('dragenter', e => {
+  e.preventDefault()
+  dragDepth++
+  dropzone.classList.add('dragging')
+})
+dropzone.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) { dragDepth = 0; dropzone.classList.remove('dragging') }
+})
+dropzone.addEventListener('drop', e => {
+  e.preventDefault()
+  dragDepth = 0
+  dropzone.classList.remove('dragging')
+  const file = e.dataTransfer.files[0]
+  if (file) handleFile(file)
+})
+
+// 阻止浏览器直接打开拖入的图片
+window.addEventListener('dragover', e => e.preventDefault())
+window.addEventListener('drop', e => e.preventDefault())
+
+async function handleFile(file) {
+  if (!file.type.startsWith('image/')) {
+    showError('请选择图片文件')
+    return
+  }
+  hideError()
+
+  // 预览（先隐藏等待 load，避免闪现破损图标）
+  if (currentUrl) URL.revokeObjectURL(currentUrl)
+  previewImg.hidden = true
+  previewFallback.hidden = true
+  currentUrl = URL.createObjectURL(file)
+  previewImg.src = currentUrl
+  fileName.textContent = file.name
+  fileSize.textContent = formatSize(file.size)
+
+  // 解析
+  try {
+    const meta = await exifr.parse(file)
+    currentJson = meta ? JSON.stringify(meta, null, 2) : ''
+    renderMeta(meta)
+    renderPrompts(meta)
+    result.textContent = currentJson || '// 无 EXIF 数据'
+  } catch (err) {
+    console.error(err)
+    currentJson = ''
+    metaList.innerHTML = '<div class="meta-empty">无 EXIF 信息</div>'
+    renderPrompts(null)
+    result.textContent = ''
+  }
+  resultPanel.hidden = false
+}
+
+function renderMeta(meta) {
+  if (!meta || Object.keys(meta).length === 0) {
+    metaList.innerHTML = '<div class="meta-empty">未检测到 EXIF 信息</div>'
+    return
+  }
+  metaList.innerHTML = ''
+  for (const [k, v] of Object.entries(meta)) {
+    const row = document.createElement('div')
+    row.className = 'meta-row'
+    const key = document.createElement('div')
+    key.className = 'k'
+    key.textContent = k
+    const val = document.createElement('div')
+    val.className = 'v'
+    val.textContent = formatValue(v)
+    row.append(key, val)
+    metaList.appendChild(row)
+  }
+}
+
+function formatValue(v) {
+  if (v === null || v === undefined) return '-'
+  if (v instanceof Date) return v.toLocaleString('zh-CN')
+  if (Array.isArray(v) || typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(2) + ' MB'
+}
+
+function showError(msg) {
+  errorBox.textContent = msg
+  errorBox.style.display = 'block'
+}
+
+function hideError() {
+  errorBox.style.display = 'none'
+}
+
+function renderPrompts(meta) {
+  const p = extractPrompts(meta)
+  const params = (p && p.params) || []
+
+  currentPositive = p ? decodeEscaped(p.positive) : ''
+  currentNegative = p ? decodeEscaped(p.negative) : ''
+  promptPos.textContent = currentPositive || '（空）'
+  promptNeg.textContent = currentNegative || '（空）'
+  promptCards.hidden = !p
+
+  paramsList.innerHTML = ''
+  for (const [k, v] of params) {
+    const row = document.createElement('div')
+    row.className = 'meta-row'
+    const key = document.createElement('div')
+    key.className = 'k'
+    key.textContent = k
+    const val = document.createElement('div')
+    val.className = 'v'
+    val.textContent = v
+    row.append(key, val)
+    paramsList.appendChild(row)
+  }
+  paramsBlock.hidden = params.length === 0
+  paramsTitle.textContent = p && p.source ? `生成参数 · ${p.source}` : '生成参数'
+}
+
+// 解码被二次转义的字面量序列：\uXXXX（含代理对）、\n、\r、\t、\"
+function decodeEscaped(s) {
+  if (typeof s !== 'string' || !s.includes('\\')) return s
+  try {
+    const v = JSON.parse('"' + s.replaceAll('"', '\\"') + '"')
+    if (typeof v === 'string') return v
+  } catch { /* 含非法转义时走手动解码 */ }
+  return s
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+}
+
+// ---------- 通用提取：兼容 ComfyUI / A1111(SD WebUI) / NovelAI / InvokeAI / 简单字段 ----------
+
+function tryParseJSON(s) {
+  if (typeof s !== 'string') return null
+  const t = s.trim()
+  if (!t.startsWith('{') && !t.startsWith('[')) return null
+  try { return JSON.parse(t) } catch { return null }
+}
+
+const PARAM_LABELS = {
+  steps: '步数', cfg: 'CFG', cfg_scale: 'CFG', scale: 'CFG', guidance: '引导系数',
+  sampler: '采样器', sampler_name: '采样器', scheduler: '调度器', noise_schedule: '噪声调度',
+  seed: '种子', width: '宽度', height: '高度', batch_size: '批次数', denoise: '重绘幅度',
+  unet_name: 'UNet 模型', ckpt_name: '模型', model_name: '模型', vae_name: 'VAE',
+  clip_name: 'CLIP 模型', clip_name1: 'CLIP 模型 1', clip_name2: 'CLIP 模型 2',
+  lora_name: 'LoRA', filename_prefix: '保存前缀'
+}
+
+// 按白名单收集生成参数（同标签取首次出现，只收基本类型值）
+function collectParams(entries) {
+  const out = []
+  const seen = new Set()
+  for (const [k, v] of entries) {
+    const label = PARAM_LABELS[k]
+    if (!label || seen.has(label)) continue
+    if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') continue
+    seen.add(label)
+    out.push([label, String(v)])
+  }
+  return out
+}
+
+function extractPrompts(meta) {
+  if (!meta) return null
+
+  // 1) ComfyUI：prompt 字段为工作流节点图 JSON
+  const graph = tryParseJSON(meta.prompt)
+  if (graph && !Array.isArray(graph)) {
+    const nodes = Object.values(graph)
+    if (nodes.some(n => n?.class_type && n.inputs)) {
+      const sampler = nodes.find(n => n.inputs && 'positive' in n.inputs && 'negative' in n.inputs)
+      const paramEntries = []
+      for (const node of nodes) {
+        if (node.inputs) paramEntries.push(...Object.entries(node.inputs))
+      }
+      const r = {
+        positive: sampler ? resolveText(graph, sampler.inputs.positive) : '',
+        negative: sampler ? resolveText(graph, sampler.inputs.negative) : '',
+        params: collectParams(paramEntries),
+        source: 'ComfyUI'
+      }
+      // prompt 图里取不到文本（子图/代理节点）时，从 workflow 字段兜底
+      if (!r.positive && !r.negative) {
+        const wf = fromComfyWorkflow(meta)
+        if (wf) { r.positive = wf.positive; r.negative = wf.negative }
+      }
+      return r
+    }
+  }
+
+  // 2) prompt 图不可解析但存在 workflow 字段时兜底
+  if (meta.workflow) {
+    const wf = fromComfyWorkflow(meta)
+    if (wf) return { positive: wf.positive, negative: wf.negative, params: [], source: 'ComfyUI' }
+  }
+
+  // 3) InvokeAI：invokeai_metadata 字段为 JSON 字符串
+  const inv = tryParseJSON(meta.invokeai_metadata)
+  if (inv && (inv.positive_prompt || inv.negative_prompt)) {
+    return {
+      positive: String(inv.positive_prompt || ''),
+      negative: String(inv.negative_prompt || ''),
+      params: collectParams(Object.entries(inv)),
+      source: 'InvokeAI'
+    }
+  }
+
+  // 4) NovelAI：Comment 字段为 JSON 字符串（uc = 负向提示词）
+  const comment = tryParseJSON(meta.Comment)
+  if (comment && (comment.prompt || comment.uc)) {
+    const params = collectParams(Object.entries(comment))
+    if (comment.width && comment.height) {
+      params.push(['尺寸', `${comment.width}×${comment.height}`])
+    }
+    return {
+      positive: String(comment.prompt || ''),
+      negative: String(comment.uc || ''),
+      params,
+      source: 'NovelAI'
+    }
+  }
+
+  // 5) A1111 / SD WebUI：parameters 字段为多行文本
+  const paramsText = meta.parameters ?? meta.Parameters
+  if (typeof paramsText === 'string' && paramsText.trim()) {
+    const r = parseA1111(paramsText)
+    if (r) return r
+  }
+
+  // 6) 简单字段：prompt 为纯文本正向，negative_prompt / negative 为负向
+  const pos = typeof meta.prompt === 'string' ? meta.prompt : ''
+  const neg = typeof meta.negative_prompt === 'string' ? meta.negative_prompt
+            : typeof meta.negative === 'string' ? meta.negative : ''
+  if (pos.trim() || neg.trim()) {
+    return { positive: pos, negative: neg, params: [], source: null }
+  }
+
+  return null
+}
+
+// 解析 A1111 parameters 文本：正向 \n Negative prompt: 负向 \n Steps: 20, Sampler: ..., Seed: ...
+function parseA1111(text) {
+  const NEG = 'Negative prompt:'
+  let positive = text
+  let negative = ''
+  let settings = ''
+  const negIdx = text.indexOf(NEG)
+  if (negIdx >= 0) {
+    positive = text.slice(0, negIdx)
+    const rest = text.slice(negIdx + NEG.length)
+    const m = rest.match(/\n\s*Steps\s*:/)
+    if (m) {
+      negative = rest.slice(0, m.index)
+      settings = rest.slice(m.index)
+    } else {
+      negative = rest
+    }
+  } else {
+    const m = text.match(/\n\s*Steps\s*:/)
+    if (m) {
+      positive = text.slice(0, m.index)
+      settings = text.slice(m.index)
+    }
+  }
+  positive = positive.trim()
+  negative = negative.trim()
+  if (!positive && !negative) return null
+  const params = []
+  for (const seg of settings.trim().split(/,\s*(?=[A-Za-z][\w \-]*:)/)) {
+    const i = seg.indexOf(':')
+    if (i > 0) {
+      const k = seg.slice(0, i).trim()
+      const v = seg.slice(i + 1).trim()
+      if (k && v) params.push([k, v])
+    }
+  }
+  return { positive, negative, params, source: 'A1111' }
+}
+
+// 从 ComfyUI workflow JSON 兜底提取提示词（覆盖子图/代理节点：文本存于节点 widgets_values）
+function fromComfyWorkflow(meta) {
+  const wf = tryParseJSON(meta.workflow)
+  if (!wf || !Array.isArray(wf.nodes)) return null
+  const texts = []
+  const collect = nodes => {
+    for (const n of nodes || []) {
+      if (!/TextEncode|Prompt/i.test(n?.type || '')) continue
+      const s = (Array.isArray(n.widgets_values) ? n.widgets_values : [])
+        .find(v => typeof v === 'string' && v.trim() !== '')
+      if (s) texts.push(s)
+    }
+  }
+  collect(wf.nodes)
+  for (const sg of wf.definitions?.subgraphs || []) collect(sg.nodes)
+  if (!texts.length) return null
+  return { positive: texts[0], negative: texts.length > 1 ? texts[1] : '' }
+}
+
+// 递归解析提示词：文本直接返回；引用节点则取其 text 输入（ConditioningZeroOut 视为空负向）
+function resolveText(graph, ref, depth = 0) {
+  if (typeof ref === 'string') return ref
+  if (Array.isArray(ref) && depth < 10) {
+    const node = graph[ref[0]]
+    if (node?.inputs) {
+      if (typeof node.inputs.text !== 'undefined') return resolveText(graph, node.inputs.text, depth + 1)
+      if (node.class_type === 'ConditioningZeroOut') return ''
+    }
+  }
+  return ''
+}
+
+function bindCopy(btn, getText, resetText) {
+  btn.addEventListener('click', async () => {
+    const text = getText()
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      btn.textContent = '已复制'
+      setTimeout(() => (btn.textContent = resetText), 1500)
+    } catch {
+      showError('复制失败，请手动选择文本复制')
+    }
+  })
+}
+
+bindCopy(copyBtn, () => currentJson, '复制 JSON')
+bindCopy(copyPos, () => currentPositive, '复制')
+bindCopy(copyNeg, () => currentNegative, '复制')
+
+</script>
+</body>
+</html>
