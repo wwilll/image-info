@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloudflare KV & 环境变量测试</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #08090d;
+      --card: rgba(255, 255, 255, 0.03);
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #e8eaf0;
+      --text-dim: #8b90a0;
+      --accent: #60a5fa;
+      --error: #f87171;
+    }
+
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', PingFang SC, sans-serif; background: var(--bg); color: var(--text); padding: 40px; min-height: 100vh; display: flex; justify-content: center; }
+
+    .container { width: 100%; max-width: 720px; }
+
+    h1 { font-size: 24px; margin-bottom: 8px; color: var(--accent); }
+    .subtitle { color: var(--text-dim); font-size: 13.5px; margin-bottom: 24px; }
+
+    .form-row { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+    .form-row label { font-size: 13px; color: var(--text-dim); min-width: 80px; }
+
+    input, select, button {
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-size: 13.5px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+    }
+
+    input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+    button { cursor: pointer; transition: all 0.2s; background: rgba(96, 165, 250, 0.15); border-color: var(--accent); }
+    button:hover { background: rgba(96, 165, 250, 0.25); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .result-box { margin-top: 24px; padding: 16px; border-radius: 12px; border: 1px solid var(--border); background: rgba(255,255,255,0.03); display: none; }
+    .result-box.show { display: block; animation: fadeUp 0.3s ease; }
+
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    .status { margin-bottom: 12px; font-size: 14px; padding: 8px 12px; border-radius: 6px; }
+    .status.success { color: #6ee7b7; background: rgba(52, 211, 153, 0.1); border: 1px solid rgba(52, 211, 153, 0.2); }
+    .status.error { color: var(--error); background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.2); }
+    .status.info { color: #60a5fa; background: rgba(96, 165, 250, 0.1); border: 1px solid var(--accent); }
+
+    pre { margin: 0; padding: 14px; font-family: 'Consolas', monospace; font-size: 12.5px; line-height: 1.7; background: rgba(0,0,0,0.3); border-radius: 8px; overflow-x: auto; max-height: 400px; white-space: pre-wrap; word-break: break-all; }
+
+    .loading { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--accent); border-radius: 50%; border-top-color: transparent; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .section-title { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 12px; margin-bottom: 8px; }
+
+    .info-box {
+      background: rgba(96, 165, 250, 0.08);
+      border: 1px solid var(--accent);
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+
+    .info-box code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔧 Cloudflare KV & 环境变量测试</h1>
+    <p class="subtitle">读取 Pages Functions 绑定的环境变量 / Secrets / KV</p>
+
+    <div class="info-box">
+      <strong>💡 配置位置：</strong><br>
+      • 环境变量与 Secrets：Dashboard → Pages → Settings → <strong>Environment variables & Secrets</strong><br>
+      • KV / D1 / R2 绑定：Dashboard → Pages → Settings → <strong>Bindings</strong>，绑定后需重新部署生效
+    </div>
+
+    <div class="form-row">
+      <button id="fetchBtn">🚀 获取环境变量</button>
+    </div>
+
+    <div class="result-box" id="resultBox">
+      <div class="status" id="status"></div>
+
+      <div class="section-title">环境变量 (ENV)</div>
+      <pre id="envOutput"></pre>
+
+      <div id="kvSection" style="display: none;">
+        <div class="section-title">KV 数据</div>
+        <div class="form-row">
+          <label for="kvSelect">Namespace:</label>
+          <select id="kvSelect" style="flex: 1;"></select>
+        </div>
+        <div class="form-row">
+          <label for="kvKey">Key:</label>
+          <input type="text" id="kvKey" placeholder="读取留空=全部（前 20 条）" style="flex: 1;">
+          <button id="kvReadBtn">读取</button>
+        </div>
+        <div class="form-row">
+          <label for="kvVal">Value:</label>
+          <input type="text" id="kvVal" placeholder="写入时填的值（删除只看上面的 Key）" style="flex: 1;">
+          <button id="kvPutBtn">写入</button>
+          <button id="kvDelBtn">删除</button>
+        </div>
+        <pre id="kvOutput"></pre>
+      </div>
+    </div>
+
+    <div class="result-box show" style="margin-top: 8px; padding: 10px 14px;">
+      <span style="font-size: 12.5px; color: var(--text-dim);">
+        📌 读: <code>/api/env</code>（<code>?keys=A,B</code> 指定变量 / <code>?kv=绑定名</code> 列出 keys / <code>?kv=绑定名&key=xxx</code> 读单个值）<br>
+        ✏️ 写: <code>POST /api/kv</code>（body: name/key/value）· <code>DELETE /api/kv?name=..&key=..</code><br>
+        🔑 名称含 KEY / TOKEN / SECRET / PASSWORD 的变量会自动脱敏显示
+      </span>
+    </div>
+  </div>
+
+  <script type="module">
+    const API_BASE = '/api/env';
+    const KV_API = '/api/kv';
+
+    const $ = (id) => document.getElementById(id);
+    const fetchBtn = $('fetchBtn');
+    const resultBox = $('resultBox');
+    const kvSelect = $('kvSelect');
+    const kvKey = $('kvKey');
+    const kvVal = $('kvVal');
+    const kvReadBtn = $('kvReadBtn');
+    const kvPutBtn = $('kvPutBtn');
+    const kvDelBtn = $('kvDelBtn');
+
+    function showStatus(message, type) {
+      const statusEl = $('status');
+      statusEl.className = `status ${type}`;
+      statusEl.textContent = message;
+    }
+
+    // 按钮加载态包装
+    function withLoading(btn, label, fn) {
+      return async () => {
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = `<span class="loading"></span>${label}`;
+        try {
+          await fn();
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = original;
+        }
+      };
+    }
+
+    async function requestJson(url) {
+      const response = await fetch(url);
+      let data = null;
+      try { data = await response.json(); } catch { /* 非 JSON 响应 */ }
+      if (!response.ok) {
+        const extra = data?.availableKvBindings?.length
+          ? `（可用 KV 绑定：${data.availableKvBindings.join(', ')}）`
+          : (data?.hint ? `（${data.hint}）` : '');
+        throw new Error(data?.error || `HTTP ${response.status} ${extra}`);
+      }
+      return data;
+    }
+
+    const loadEnv = withLoading(fetchBtn, '获取中...', async () => {
+      resultBox.classList.add('show');
+      try {
+        showStatus('正在请求 /api/env ...', 'info');
+        const data = await requestJson(API_BASE);
+
+        $('envOutput').textContent = JSON.stringify(data.env || {}, null, 2);
+
+        const bindings = data.bindings || [];
+        const kvBindings = bindings.filter((b) => b.type === 'KV');
+
+        $('kvSection').style.display = 'block';
+        if (kvBindings.length > 0) {
+          kvSelect.innerHTML = kvBindings
+            .map((b) => `<option value="${b.name}">${b.name}</option>`)
+            .join('');
+          showStatus(
+            `✅ 获取成功：${Object.keys(data.env || {}).length} 个环境变量 / ${bindings.length} 个绑定（含 ${kvBindings.length} 个 KV）`,
+            'success'
+          );
+        } else {
+          kvSelect.innerHTML = '<option value="">（未检测到 KV 绑定）</option>';
+          showStatus(
+            '✅ 环境变量获取成功，但未检测到 KV 绑定。请在 Dashboard → Settings → Bindings 添加后重新部署',
+            'info'
+          );
+        }
+      } catch (error) {
+        showStatus(`❌ 请求失败：${error.message}`, 'error');
+      }
+    });
+
+    // 通用 KV 写接口请求（POST / DELETE）
+    async function kvApi(method, url, body) {
+      const response = await fetch(url, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      let data = null;
+      try { data = await response.json(); } catch { /* 非 JSON 响应 */ }
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    // 拉取并渲染整个 namespace（前 20 条）
+    async function renderKvList(kvName) {
+      const data = await requestJson(`${API_BASE}?kv=${encodeURIComponent(kvName)}&readAll=true`);
+      $('kvOutput').textContent = JSON.stringify(data.kv, null, 2);
+      return data;
+    }
+
+    const readKv = withLoading(kvReadBtn, '读取中...', async () => {
+      const kvName = kvSelect.value;
+      if (!kvName) {
+        showStatus('❌ 未检测到 KV 绑定，请先在 Dashboard → Settings → Bindings 添加', 'error');
+        return;
+      }
+
+      const key = kvKey.value.trim();
+      try {
+        if (key) {
+          const data = await requestJson(
+            `${API_BASE}?kv=${encodeURIComponent(kvName)}&key=${encodeURIComponent(key)}`
+          );
+          $('kvOutput').textContent = JSON.stringify(data.kv, null, 2);
+          showStatus(`✅ KV 读取成功（key: ${key}${data.kv.value == null ? '，不存在' : ''}）`, 'success');
+        } else {
+          const data = await renderKvList(kvName);
+          const count = Object.keys(data.kv.entries || {}).length;
+          showStatus(`✅ KV 读取成功（${count} 条${data.kv.truncated ? '，超出部分已截断' : ''}）`, 'success');
+        }
+      } catch (error) {
+        showStatus(`❌ KV 读取失败：${error.message}`, 'error');
+      }
+    });
+
+    const putKv = withLoading(kvPutBtn, '写入中...', async () => {
+      const kvName = kvSelect.value;
+      if (!kvName) {
+        showStatus('❌ 未检测到 KV 绑定，请先在 Dashboard → Settings → Bindings 添加', 'error');
+        return;
+      }
+      const key = kvKey.value.trim();
+      if (!key) {
+        showStatus('❌ 请先在 Key 栏填写要写入的键名', 'error');
+        return;
+      }
+      if (kvVal.value === '') {
+        showStatus('❌ 请填写要写入的 Value', 'error');
+        return;
+      }
+
+      try {
+        const data = await kvApi('POST', KV_API, { name: kvName, key, value: kvVal.value });
+        $('kvOutput').textContent = JSON.stringify(data, null, 2);
+        const list = await renderKvList(kvName);
+        const count = Object.keys(list.kv.entries || {}).length;
+        showStatus(`✅ 已写入 ${kvName} / ${key}（当前 ${count} 条）`, 'success');
+      } catch (error) {
+        showStatus(`❌ 写入失败：${error.message}`, 'error');
+      }
+    });
+
+    const deleteKv = withLoading(kvDelBtn, '删除中...', async () => {
+      const kvName = kvSelect.value;
+      if (!kvName) {
+        showStatus('❌ 未检测到 KV 绑定，请先在 Dashboard → Settings → Bindings 添加', 'error');
+        return;
+      }
+      const key = kvKey.value.trim();
+      if (!key) {
+        showStatus('❌ 请先在 Key 栏填写要删除的键名', 'error');
+        return;
+      }
+
+      try {
+        const data = await kvApi(
+          'DELETE',
+          `${KV_API}?name=${encodeURIComponent(kvName)}&key=${encodeURIComponent(key)}`
+        );
+        $('kvOutput').textContent = JSON.stringify(data, null, 2);
+        const list = await renderKvList(kvName);
+        const count = Object.keys(list.kv.entries || {}).length;
+        showStatus(`✅ 已删除 ${kvName} / ${key}（剩余 ${count} 条）`, 'success');
+      } catch (error) {
+        showStatus(`❌ 删除失败：${error.message}`, 'error');
+      }
+    });
+
+    fetchBtn.addEventListener('click', loadEnv);
+    kvReadBtn.addEventListener('click', readKv);
+    kvPutBtn.addEventListener('click', putKv);
+    kvDelBtn.addEventListener('click', deleteKv);
+  </script>
+</body>
+</html>

@@ -3,7 +3,8 @@
 ## 项目性质
 纯静态 HTML 项目，部署在 Cloudflare Pages 上。
 没有构建步骤、没有包管理器、没有 node_modules。
-本地开发直接用浏览器打开 index.html 即可。
+输出目录为 `dist/`（wrangler.toml: pages_build_output_dir = "./dist"），页面与后端代码都放在 dist/ 下。
+本地开发直接用浏览器打开 dist/index.html 即可。
 
 ## 硬性约束
 - 禁止创建 package.json、node_modules、vite/webpack 等构建配置。
@@ -12,10 +13,10 @@
 - 不要生成 `.ts`、`.jsx`、`.scss` 等需要编译的文件；只用 `.html`、`.css`、`.js`。
 
 ## 代码组织（保持克制）
-- 逻辑简单时：CSS/JS 内联在 index.html 的 `<style>` / `<script>` 里。
-- 逻辑较复杂时：允许根目录下用 `index.js` 承载主要逻辑，由 `index.html` 用 `<script src="./index.js">` 引入。
+- 逻辑简单时：CSS/JS 内联在 `dist/index.html` 的 `<style>` / `<script>` 里。
+- 逻辑较复杂时：允许在 `dist/` 下用 `index.js` 承载主要逻辑，由 `index.html` 用 `<script src="./index.js">` 引入。
 - 允许少量按职责拆分的 `.js` 文件（如 `storage.js`、`api.js`），但总数控制在 3~4 个以内，不要为每个函数建文件。
-- 禁止引入 src/、lib/、utils/ 这种多层目录结构；所有 `.js` 平铺在根目录。
+- 禁止引入 src/、lib/、utils/ 这种多层目录结构；所有 `.js` 平铺在 `dist/` 下。
 - 页面主逻辑仍建议保持简单，能用普通 `<script>` 解决的，不强行上 ESM。
 
 ## CDN 选择（按国内访问速度排序）
@@ -39,14 +40,14 @@
 - 免费版单站点最多 20,000 个文件，单文件最大 25 MiB。
 - 不要把大文件（视频、大型数据集）放进仓库，用 R2 或外部存储。
 
-### Functions 规则
-- 如果需要后端逻辑，在项目根目录创建 `functions/` 目录（不能放在静态输出目录里）。
-- 文件名决定路由：`functions/hello.js` → `/hello`，`functions/api/[[path]].js` → `/api/*`。
-- 每个 Function 必须导出 `onRequest`，返回 `Response` 或 `Promise<Response>`。
-- Functions 运行在 Workers 运行时，支持 ES Module 导入，但只兼容部分 Node.js API。
-- **不要试图在 Functions 里用 `fs`、`path` 等完整 Node 内置模块**，也不要假设有 `node_modules` 可读。
+### 后端逻辑（_worker.js 高级模式）
+- 后端逻辑统一写在输出目录的 `dist/_worker.js`（Pages 高级模式），由它接管所有路由；不使用 `functions/` 目录（`_worker.js` 存在时 `functions/` 会被忽略）。
+- 导出 `export default { async fetch(request, env, ctx) { ... } }`，返回 `Response`。
+- 用路由表按 `METHOD + 路径` 分发；非 API 路径回退 `env.ASSETS.fetch(request)` 交给静态资源。
+- 绑定（KV / 变量 / Secret）挂在 `fetch` 的 `env` 参数上；没有 Pages Functions 的 `context` 对象，不要访问 `context.env` / `context.cloudflare`。
+- 运行在 Workers 运行时，支持 ES Module，但只兼容部分 Node.js API：**不要用 `fs`、`path` 等完整 Node 内置模块**，也不要假设有 `node_modules` 可读。
 
 ### 部署检查
 - 改完后确认所有 CDN URL 可访问（BootCDN 优先）。
-- 如果改了 `functions/` 下的文件，确认路由路径与前端请求一致。
-- 没有 `npm test` 之类的命令，验证方式是用浏览器打开或访问部署后的 URL。
+- 如果改了 `_worker.js` 的路由，确认与前端请求路径一致。
+- 没有 `npm test` 之类的命令，验证方式是 `npx wrangler pages dev dist` 本地跑通，或访问部署后的 URL。
