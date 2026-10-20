@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloudflare KV & 环境变量测试</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #08090d;
+      --card: rgba(255, 255, 255, 0.03);
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #e8eaf0;
+      --text-dim: #8b90a0;
+      --accent: #60a5fa;
+      --error: #f87171;
+    }
+
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', PingFang SC, sans-serif; background: var(--bg); color: var(--text); padding: 40px; min-height: 100vh; display: flex; justify-content: center; }
+
+    .container { width: 100%; max-width: 720px; }
+
+    h1 { font-size: 24px; margin-bottom: 8px; color: var(--accent); }
+    .subtitle { color: var(--text-dim); font-size: 13.5px; margin-bottom: 24px; }
+
+    .form-row { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+    .form-row label { font-size: 13px; color: var(--text-dim); min-width: 80px; }
+
+    input, select, button {
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-size: 13.5px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+    }
+
+    input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+    .token-input { width: 300px !important; }
+    
+    button { cursor: pointer; transition: all 0.2s; background: rgba(96, 165, 250, 0.15); border-color: var(--accent); }
+    button:hover { background: rgba(96, 165, 250, 0.25); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .result-box { margin-top: 24px; padding: 16px; border-radius: 12px; border: 1px solid var(--border); background: rgba(255,255,255,0.03); display: none; }
+    .result-box.show { display: block; animation: fadeUp 0.3s ease; }
+
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    .status { margin-bottom: 12px; font-size: 14px; padding: 8px 12px; border-radius: 6px; }
+    .status.success { color: #6ee7b7; background: rgba(52, 211, 153, 0.1); border: 1px solid rgba(52, 211, 153, 0.2); }
+    .status.error { color: var(--error); background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.2); }
+    .status.info { color: #60a5fa; background: rgba(96, 165, 250, 0.1); border: 1px solid var(--accent); }
+
+    pre { margin: 0; padding: 14px; font-family: 'Consolas', monospace; font-size: 12.5px; line-height: 1.7; background: rgba(0,0,0,0.3); border-radius: 8px; overflow-x: auto; max-height: 400px; white-space: pre-wrap; word-break: break-all; }
+
+    .loading { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--accent); border-radius: 50%; border-top-color: transparent; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    
+    .section-title { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 12px; margin-bottom: 8px; }
+
+    .info-box { 
+      background: rgba(96, 165, 250, 0.08); 
+      border: 1px solid var(--accent); 
+      padding: 12px; 
+      border-radius: 8px; 
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+
+    .info-box code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔧 Cloudflare KV & 环境变量测试</h1>
+    <p class="subtitle">真实读取 /api/env 端点数据</p>
+
+    <div class="info-box">
+      <strong>⚠️ 重要提示：</strong>
+      <br>• 你需要先在 Cloudflare Dashboard 设置 <code>CF_PAGES_API_TOKEN</code> 环境变量
+      <br>• Token 需要有 <strong>Account Storage (KV)</strong> 权限
+    </div>
+
+    <div class="form-row">
+      <label for="apiKey">API Token:</label>
+      <input type="password" id="apiKey" class="token-input" placeholder="输入 CF_PAGES_API_TOKEN（必填）" value="">
+    </div>
+
+    <div class="form-row">
+      <button id="fetchBtn">🚀 获取环境变量</button>
+      <button id="kvBtn" disabled style="margin-left: auto;">💾 读取 KV</button>
+    </div>
+
+    <div class="result-box" id="resultBox">
+      <div class="status" id="status"></div>
+      
+      <div class="section-title">环境变量 (ENV)</div>
+      <pre id="envOutput"></pre>
+
+      <div id="kvSection" style="display: none;">
+        <div class="section-title">KV 数据</div>
+        <pre id="kvOutput"></pre>
+        
+        <div class="form-row" style="margin-top: 12px;">
+          <label for="kvId">KV Namespace ID:</label>
+          <input type="text" id="kvId" placeholder="例如：abc123xyz... (从 KV 管理页面复制)">
+        </div>
+      </div>
+    </div>
+
+    <div class="result-box show" style="margin-top: 8px; padding: 10px 14px;">
+      <span style="font-size: 12.5px; color: var(--text-dim);">
+        📌 API Endpoint: <code>/api/env</code> | 
+        🔑 Token: CF_PAGES_API_TOKEN (需要在 Cloudflare Dashboard 设置)
+      </span>
+    </div>
+  </div>
+
+  <script type="module">
+    const API_BASE = '/api/env';
+    
+    document.getElementById('fetchBtn').addEventListener('click', async () => {
+      await fetchData();
+    });
+
+    function getApiKey() {
+      return document.getElementById('apiKey').value.trim();
+    }
+
+    async function fetchData() {
+      const token = getApiKey();
+      if (!token) {
+        showStatus('❌ 请先输入 API Token', 'error');
+        return;
+      }
+
+      // 检查环境变量是否存在（本地开发时）
+      const localEnv = window.location.hostname === 'localhost';
+      
+      let fetchUrl = API_BASE;
+      if (localEnv && token) {
+        // 本地测试时，如果设置了 CF_PAGES_API_TOKEN 环境变量，直接使用它
+        fetchUrl += '?all=true&keys=CF_';
+        document.getElementById('kvBtn').disabled = false;
+      }
+
+      const btn = document.getElementById('fetchBtn');
+      const resultBox = document.getElementById('resultBox');
+      const statusEl = document.getElementById('status');
+      const envOutput = document.getElementById('envOutput');
+      
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loading"></span>获取中...';
+      resultBox.classList.add('show');
+
+      try {
+        showStatus('正在请求环境变量...', 'info');
+
+        // 构造 API URL
+        const urlParams = new URLSearchParams();
+        
+        if (localEnv && token) {
+          urlParams.set('all', 'true');
+          urlParams.set('keys', 'CF_');
+        } else {
+          // 用户手动指定参数
+          const keysParam = document.getElementById('kvId').value.trim();
+          if (keysParam) {
+            urlParams.set('all', 'false');
+            urlParams.set('keys', keysParam);
+          }
+        }
+
+        const response = await fetch(API_BASE + '?' + urlParams.toString(), {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        // 显示环境变量
+        envOutput.textContent = JSON.stringify(data, null, 2);
+        
+        showStatus(`✅ 成功获取 ${Object.keys(data.env || {}).length} 个环境变量`, 'success');
+
+        // 如果数据中包含 KV，显示出来
+        if (data.kv) {
+          document.getElementById('kvSection').style.display = 'block';
+          
+          const kvOutput = document.getElementById('kvOutput');
+          kvOutput.textContent = JSON.stringify(data.kv, null, 2);
+          
+          showStatus(`✅ KV 数据：${Object.keys(data.kv).length} 个键值对`, 'success');
+        }
+
+      } catch (error) {
+        console.error('Fetch error:', error);
+        
+        if (localEnv && token) {
+          // 本地开发模式，尝试从 environment 读取
+          showStatus(`⚠️ API Token 已输入，但无法直接访问 Pages Functions\n\n请确认:\n1. 项目是否正确部署到 Cloudflare Pages\n2. CF_PAGES_API_TOKEN 环境变量是否设置\n3. 如果是本地测试，可能需要先部署`, 'error');
+        } else {
+          showStatus(`❌ 请求失败：${error.message}`, 'error');
+        }
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '🚀 获取环境变量';
+      }
+    }
+
+    function showStatus(message, type) {
+      const statusEl = document.getElementById('status');
+      statusEl.className = `status ${type}`;
+      statusEl.textContent = message;
+    }
+
+    // KV 按钮点击事件
+    document.getElementById('kvBtn').addEventListener('click', async () => {
+      if (!getApiKey()) {
+        showStatus('❌ 请先输入 API Token', 'error');
+        return;
+      }
+      
+      const kvId = document.getElementById('kvId').value.trim();
+      if (!kvId) {
+        showStatus('❌ 请输入 KV Namespace ID', 'error');
+        return;
+      }
+
+      // 更新 API URL 包含 KV 参数
+      const currentUrl = new URL(window.location);
+      currentUrl.searchParams.set('all', 'true');
+      
+      window.location.href = currentUrl.toString();
+    });
+  </script>
+</body>
+</html>
