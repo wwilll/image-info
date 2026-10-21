@@ -333,7 +333,7 @@
 
   details.raw summary:hover { color: var(--text); }
 
-  details.raw pre {
+  details.raw .raw-json {
     padding: 0 18px 16px;
     font-family: var(--mono);
     font-size: 11.5px;
@@ -341,9 +341,42 @@
     color: #b8bdd0;
     max-height: 300px;
     overflow: auto;
-    white-space: pre-wrap;
+  }
+
+  /* JSON 树（可展开/收缩） */
+  .json-tree {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.7;
     word-break: break-all;
   }
+
+  .jt-line { white-space: pre-wrap; }
+  .jt-parent { cursor: pointer; }
+  .jt-parent:hover > .jt-toggle { color: var(--accent); }
+
+  .jt-children {
+    margin-left: 6px;
+    padding-left: 13px;
+    border-left: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .jt-toggle {
+    display: inline-block;
+    width: 14px;
+    color: var(--text-dim);
+    user-select: none;
+  }
+
+  .jt-key { color: #9fb0ff; }
+  .jt-idx { color: var(--text-dim); }
+  .jt-str { color: #9ed6a5; }
+  .jt-num { color: #e6b981; }
+  .jt-bool { color: #f093a7; }
+  .jt-null { color: var(--text-dim); }
+  .jt-brace, .jt-tail { color: var(--text-dim); }
+  .jt-preview { color: var(--text-dim); }
+  .jt-more { color: var(--text-dim); font-style: italic; }
 
   .error {
     margin-top: 24px;
@@ -415,7 +448,7 @@
       <div class="meta-list" id="metaList"></div>
       <details class="raw">
         <summary>查看原始 JSON</summary>
-        <pre id="result"></pre>
+        <div id="result" class="raw-json"></div>
       </details>
     </div>
   </section>
@@ -510,7 +543,12 @@ async function handleFile(file) {
     currentJson = meta ? JSON.stringify(meta, null, 2) : ''
     renderMeta(meta)
     renderPrompts(meta)
-    result.textContent = currentJson || '// 无 EXIF 数据'
+    result.innerHTML = ''
+    if (currentJson) {
+      result.appendChild(buildJsonTree(meta, 2))
+    } else {
+      result.textContent = '// 无 EXIF 数据'
+    }
   } catch (err) {
     console.error(err)
     currentJson = ''
@@ -535,7 +573,11 @@ function renderMeta(meta) {
     key.textContent = k
     const val = document.createElement('div')
     val.className = 'v'
-    val.textContent = formatValue(v)
+    if (isTreeable(v)) {
+      val.appendChild(buildJsonTree(v, 1))
+    } else {
+      val.textContent = formatValue(v)
+    }
     row.append(key, val)
     metaList.appendChild(row)
   }
@@ -603,6 +645,152 @@ function decodeEscaped(s) {
     .replace(/\\r/g, '\r')
     .replace(/\\t/g, '\t')
     .replace(/\\"/g, '"')
+}
+
+// ---------- JSON 树形视图（可展开/收缩；字符串形式的 JSON 会被解析，\uXXXX 随之解码） ----------
+
+const JT_MAX_CHILDREN = 200
+
+function buildJsonTree(value, expandDepth) {
+  const tree = document.createElement('div')
+  tree.className = 'json-tree'
+  tree.appendChild(buildJsonNode(null, value, 0, expandDepth))
+  return tree
+}
+
+function buildJsonNode(key, value, depth, expandDepth) {
+  // 字符串形式的 JSON（如 ComfyUI 的 prompt 字段）解析成节点展示
+  if (typeof value === 'string') {
+    const parsed = tryParseJSON(value)
+    if (parsed) value = parsed
+  }
+
+  const node = document.createElement('div')
+  node.className = 'jt-node'
+  const line = document.createElement('div')
+  line.className = 'jt-line'
+  node.appendChild(line)
+
+  const toggle = document.createElement('span')
+  toggle.className = 'jt-toggle'
+  line.appendChild(toggle)
+
+  if (key !== null) {
+    const k = document.createElement('span')
+    if (typeof key === 'number') {
+      k.className = 'jt-idx'
+      k.textContent = String(key)
+    } else {
+      k.className = 'jt-key'
+      k.textContent = JSON.stringify(String(key))
+    }
+    line.append(k, ': ')
+  }
+
+  const isObj = value !== null && typeof value === 'object'
+    && !(value instanceof Date) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)
+
+  if (!isObj) {
+    line.appendChild(jsonPrimitive(value))
+    return node
+  }
+
+  const isArr = Array.isArray(value)
+  const entries = isArr ? value.map((v, i) => [i, v]) : Object.entries(value)
+  const openB = isArr ? '[' : '{'
+  const closeB = isArr ? ']' : '}'
+
+  if (entries.length === 0) {
+    const s = document.createElement('span')
+    s.className = 'jt-brace'
+    s.textContent = openB + closeB
+    line.appendChild(s)
+    return node
+  }
+
+  line.classList.add('jt-parent')
+
+  const brace = document.createElement('span')
+  brace.className = 'jt-brace'
+  brace.textContent = openB
+
+  const preview = document.createElement('span')
+  preview.className = 'jt-preview'
+  preview.textContent = ` … ${entries.length} 项 ${closeB}`
+
+  line.append(brace, preview)
+
+  const tail = document.createElement('div')
+  tail.className = 'jt-line jt-tail'
+  tail.textContent = closeB
+
+  let expanded = false
+  let childrenEl = null
+  // 子节点惰性构建，避免大对象一次生成过多 DOM
+  const ensureChildren = () => {
+    if (childrenEl) return childrenEl
+    childrenEl = document.createElement('div')
+    childrenEl.className = 'jt-children'
+    for (const [k, v] of entries.slice(0, JT_MAX_CHILDREN)) {
+      childrenEl.appendChild(buildJsonNode(k, v, depth + 1, expandDepth))
+    }
+    if (entries.length > JT_MAX_CHILDREN) {
+      const more = document.createElement('div')
+      more.className = 'jt-line jt-more'
+      more.textContent = `… 其余 ${entries.length - JT_MAX_CHILDREN} 项省略`
+      childrenEl.appendChild(more)
+    }
+    return childrenEl
+  }
+
+  const apply = () => {
+    toggle.textContent = expanded ? '▾' : '▸'
+    preview.style.display = expanded ? 'none' : ''
+    if (expanded) {
+      node.append(ensureChildren(), tail)
+      childrenEl.style.display = ''
+      tail.style.display = ''
+    } else {
+      if (childrenEl) childrenEl.style.display = 'none'
+      tail.style.display = 'none'
+    }
+  }
+  expanded = depth < expandDepth
+  apply()
+  line.addEventListener('click', () => { expanded = !expanded; apply() })
+
+  return node
+}
+
+function jsonPrimitive(value) {
+  const s = document.createElement('span')
+  if (typeof value === 'string') {
+    s.className = 'jt-str'
+    s.textContent = JSON.stringify(value)
+  } else if (typeof value === 'number') {
+    s.className = 'jt-num'
+    s.textContent = String(value)
+  } else if (typeof value === 'boolean') {
+    s.className = 'jt-bool'
+    s.textContent = String(value)
+  } else if (value instanceof Date) {
+    s.className = 'jt-str'
+    s.textContent = JSON.stringify(value.toLocaleString('zh-CN'))
+  } else if (ArrayBuffer.isView(value)) {
+    s.className = 'jt-null'
+    s.textContent = `⟨${value.constructor.name} · ${value.length}⟩`
+  } else {
+    s.className = 'jt-null'
+    s.textContent = 'null'
+  }
+  return s
+}
+
+// 对象/数组，或内容是 JSON 对象/数组的字符串，才用树形展示
+function isTreeable(v) {
+  if (typeof v === 'string') return !!tryParseJSON(v)
+  return !!v && typeof v === 'object'
+    && !(v instanceof Date) && !(v instanceof ArrayBuffer) && !ArrayBuffer.isView(v)
 }
 
 // ---------- 通用提取：兼容 ComfyUI / A1111(SD WebUI) / NovelAI / InvokeAI / 简单字段 ----------
