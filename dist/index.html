@@ -388,6 +388,112 @@
     font-size: 13px;
     display: none;
   }
+
+  /* === 预览图遮罩 & 全屏放大 === */
+  .card.preview { position: relative; }
+
+  /* 模糊遮罩：直接 filter img，避免额外遮罩层拦截交互 */
+  .preview.blurred img {
+    filter: blur(22px) brightness(0.7);
+    user-select: none;
+    pointer-events: none;
+  }
+  .preview.blurred { cursor: default; }
+
+  /* 浮动工具按钮（遮罩开关 + 提示） */
+  .preview-tools {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    z-index: 5;
+  }
+
+  .blur-hint {
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, border-color 0.2s, transform 0.2s;
+  }
+  .icon-btn:hover {
+    background: rgba(139, 124, 255, 0.35);
+    border-color: var(--accent);
+    transform: scale(1.05);
+  }
+  .icon-btn:active { transform: scale(0.95); }
+  .icon-btn svg { width: 18px; height: 18px; stroke: currentColor; }
+
+  /* 全屏放大 overlay */
+  .fullscreen-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.93);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fsIn 0.2s ease;
+  }
+  @keyframes fsIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .fullscreen-overlay img {
+    max-width: 95vw;
+    max-height: 92vh;
+    object-fit: contain;
+    border-radius: 6px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    user-select: none;
+    -webkit-user-drag: none;
+    transform-origin: 0 0;
+  }
+
+  .fullscreen-overlay img.can-pan { cursor: grab; }
+  .fullscreen-overlay img.panning { cursor: grabbing; }
+
+  .fs-close {
+    position: absolute;
+    top: 22px;
+    right: 22px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: #fff;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, transform 0.2s;
+  }
+  .fs-close:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: rotate(90deg);
+  }
 </style>
 </head>
 <body>
@@ -411,7 +517,17 @@
   <div class="error" id="error"></div>
 
   <section class="result" id="resultPanel" hidden>
-    <div class="card preview">
+    <div class="card preview" id="previewCard">
+      <div class="preview-tools" id="previewTools">
+        <span class="blur-hint" id="dblclickHint">双击放大</span>
+        <button class="icon-btn" id="blurToggle" title="模糊遮罩" aria-label="模糊遮罩">
+          <!-- 默认睁眼（遮罩关闭） -->
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" id="blurIcon">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </button>
+      </div>
       <img id="previewImg" alt="" hidden>
       <div class="preview-fallback" id="previewFallback" hidden>图片无法预览</div>
       <div class="fileinfo">
@@ -453,6 +569,12 @@
     </div>
   </section>
 </main>
+
+<!-- 全屏放大层 -->
+<div class="fullscreen-overlay" id="fullscreenOverlay" hidden>
+  <button class="fs-close" id="fsClose" aria-label="关闭">✕</button>
+  <img id="fullscreenImg" alt="" draggable="false">
+</div>
 
 <script type="module">
 import exifr from 'https://cdn.jsdelivr.net/npm/exifr@7.1.3/+esm'
@@ -527,6 +649,8 @@ async function handleFile(file) {
     return
   }
   hideError()
+
+  // 遮罩开关状态跨图片保留，不随新图片重置
 
   // 预览（先隐藏等待 load，避免闪现破损图标）
   if (currentUrl) URL.revokeObjectURL(currentUrl)
@@ -991,6 +1115,142 @@ function bindCopy(btn, getText, resetText) {
 bindCopy(copyBtn, () => currentJson, '复制 JSON')
 bindCopy(copyPos, () => currentPositive, '复制')
 bindCopy(copyNeg, () => currentNegative, '复制')
+
+// ========== 模糊遮罩 & 全屏放大 ==========
+const previewCard = document.querySelector('#previewCard')
+const blurToggle = document.querySelector('#blurToggle')
+const blurIcon = document.querySelector('#blurIcon')
+const dblclickHint = document.querySelector('#dblclickHint')
+const fullscreenOverlay = document.querySelector('#fullscreenOverlay')
+const fullscreenImg = document.querySelector('#fullscreenImg')
+const fsClose = document.querySelector('#fsClose')
+
+let maskEnabled = false
+
+const EYE_OPEN = `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>`
+const EYE_OFF = `<path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><path d="M14.12 14.12a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>`
+
+blurToggle.addEventListener('click', () => {
+  maskEnabled = !maskEnabled
+  previewCard.classList.toggle('blurred', maskEnabled)
+  blurIcon.innerHTML = maskEnabled ? EYE_OFF : EYE_OPEN
+  blurToggle.title = maskEnabled ? '取消模糊遮罩' : '开启模糊遮罩'
+  dblclickHint.style.opacity = maskEnabled ? '0.45' : '1'
+})
+
+// 双击放大（仅当遮罩关闭时生效）
+previewImg.addEventListener('dblclick', () => {
+  if (maskEnabled || !currentUrl) return
+  openFullscreen()
+})
+
+// fallback 区域也尝试支持（虽然不太可能被点击到）
+previewFallback.addEventListener('dblclick', () => {
+  if (maskEnabled || !currentUrl) return
+  openFullscreen()
+})
+
+function openFullscreen() {
+  fullscreenImg.src = currentUrl
+  fsScale = 1; fsX = 0; fsY = 0
+  applyTransform()
+  fullscreenOverlay.hidden = false
+  document.body.style.overflow = 'hidden'
+}
+
+function closeFullscreen() {
+  fullscreenOverlay.hidden = true
+  fullscreenImg.src = ''
+  fullscreenImg.style.transform = ''
+  fullscreenImg.classList.remove('can-pan', 'panning')
+  panning = false
+  document.body.style.overflow = ''
+}
+
+// --- 滚轮缩放（以光标为锚点） & 拖动平移 ---
+const FS_MIN = 1
+const FS_MAX = 8
+let fsScale = 1
+let fsX = 0
+let fsY = 0
+let panning = false
+let panStartX = 0, panStartY = 0, panBaseX = 0, panBaseY = 0
+
+function applyTransform() {
+  fullscreenImg.style.transform = `translate(${fsX}px, ${fsY}px) scale(${fsScale})`
+  fullscreenImg.classList.toggle('can-pan', fsScale > 1)
+}
+
+// 限制平移范围：图片至少保留 80px 在视口内，避免拖丢
+function clampPan() {
+  const M = 80
+  const w = fullscreenImg.offsetWidth
+  const h = fullscreenImg.offsetHeight
+  const left = (window.innerWidth - w) / 2
+  const top = (window.innerHeight - h) / 2
+  fsX = Math.min(window.innerWidth - M - left, Math.max(M - left - w * fsScale, fsX))
+  fsY = Math.min(window.innerHeight - M - top, Math.max(M - top - h * fsScale, fsY))
+}
+
+// 缩放前后光标指向的图像位置保持不动
+function zoomAt(factor, cx, cy) {
+  const newScale = Math.min(FS_MAX, Math.max(FS_MIN, fsScale * factor))
+  if (newScale === fsScale) return
+  const rect = fullscreenImg.getBoundingClientRect()
+  const qx = (cx - rect.left) / fsScale
+  const qy = (cy - rect.top) / fsScale
+  fsX = (cx - rect.left) + fsX - newScale * qx
+  fsY = (cy - rect.top) + fsY - newScale * qy
+  fsScale = newScale
+  if (fsScale <= FS_MIN) { fsX = 0; fsY = 0 } else { clampPan() }
+  applyTransform()
+}
+
+fullscreenOverlay.addEventListener('wheel', e => {
+  e.preventDefault()
+  zoomAt(e.deltaY < 0 ? 1.2 : 1 / 1.2, e.clientX, e.clientY)
+}, { passive: false })
+
+// 按住拖动平移（仅放大后可用）
+fullscreenImg.addEventListener('pointerdown', e => {
+  if (fsScale <= 1) return
+  e.preventDefault()
+  panning = true
+  panStartX = e.clientX
+  panStartY = e.clientY
+  panBaseX = fsX
+  panBaseY = fsY
+  fullscreenImg.setPointerCapture(e.pointerId)
+  fullscreenImg.classList.add('panning')
+})
+
+fullscreenImg.addEventListener('pointermove', e => {
+  if (!panning) return
+  fsX = panBaseX + (e.clientX - panStartX)
+  fsY = panBaseY + (e.clientY - panStartY)
+  clampPan()
+  applyTransform()
+})
+
+function endPan(e) {
+  if (!panning) return
+  panning = false
+  fullscreenImg.classList.remove('panning')
+  try { fullscreenImg.releasePointerCapture(e.pointerId) } catch { /* 已释放 */ }
+}
+fullscreenImg.addEventListener('pointerup', endPan)
+fullscreenImg.addEventListener('pointercancel', endPan)
+fullscreenImg.addEventListener('dragstart', e => e.preventDefault())
+
+fsClose.addEventListener('click', closeFullscreen)
+// 点击背景也关闭
+fullscreenOverlay.addEventListener('click', e => {
+  if (e.target === fullscreenOverlay) closeFullscreen()
+})
+// ESC 关闭
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !fullscreenOverlay.hidden) closeFullscreen()
+})
 
 </script>
 </body>
