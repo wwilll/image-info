@@ -176,6 +176,15 @@
     color: var(--text-dim);
   }
 
+  .fileinfo-row {
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .fileinfo-row .size { margin-top: 0; }
+
   .meta-head {
     display: flex;
     align-items: center;
@@ -532,7 +541,10 @@
       <div class="preview-fallback" id="previewFallback" hidden>图片无法预览</div>
       <div class="fileinfo">
         <div class="name" id="fileName"></div>
-        <div class="size" id="fileSize"></div>
+        <div class="fileinfo-row">
+          <div class="size" id="fileSize"></div>
+          <button class="prompt-copy" id="clearBtn" title="删除本地保存的图片与记录">清除记录</button>
+        </div>
       </div>
     </div>
 
@@ -643,6 +655,45 @@ dropzone.addEventListener('drop', e => {
 window.addEventListener('dragover', e => e.preventDefault())
 window.addEventListener('drop', e => e.preventDefault())
 
+// ---------- 本地持久化：IndexedDB 保存最近一张图，刷新后自动恢复 ----------
+const DB_NAME = 'exif-viewer'
+const IDB_STORE = 'kv'
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1)
+    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE)
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+function idbPut(key, value) {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite')
+    tx.objectStore(IDB_STORE).put(value, key)
+    tx.oncomplete = resolve
+    tx.onerror = () => reject(tx.error)
+  }))
+}
+
+function idbGet(key) {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key)
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  }))
+}
+
+function idbDelete(key) {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite')
+    tx.objectStore(IDB_STORE).delete(key)
+    tx.oncomplete = resolve
+    tx.onerror = () => reject(tx.error)
+  }))
+}
+
 async function handleFile(file) {
   if (!file.type.startsWith('image/')) {
     showError('请选择图片文件')
@@ -660,6 +711,9 @@ async function handleFile(file) {
   previewImg.src = currentUrl
   fileName.textContent = file.name
   fileSize.textContent = formatSize(file.size)
+
+  // 持久化到 IndexedDB（File 可直接存储），刷新后自动恢复
+  idbPut('last', file).catch(() => {})
 
   // 解析
   try {
@@ -1251,6 +1305,22 @@ fullscreenOverlay.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !fullscreenOverlay.hidden) closeFullscreen()
 })
+
+// ---------- 清除记录 & 启动恢复 ----------
+const clearBtn = document.querySelector('#clearBtn')
+
+clearBtn.addEventListener('click', async () => {
+  try { await idbDelete('last') } catch { /* 忽略 */ }
+  if (currentUrl) { URL.revokeObjectURL(currentUrl); currentUrl = null }
+  resultPanel.hidden = true
+  fileName.textContent = ''
+  fileSize.textContent = ''
+})
+
+// 页面加载时恢复上次的图片（File 直接复用 handleFile 重新解析）
+idbGet('last')
+  .then(file => { if (file) handleFile(file) })
+  .catch(() => {})
 
 </script>
 </body>
